@@ -1,0 +1,765 @@
+---
+title: "Projet à La Fin du Semestre"
+author: "Groupe 1"
+output:
+  rmdformats::robobook:
+    use_bookdown: true
+    number_sections: true
+    df_print: kable
+    code_folding: hide
+    includes:
+      after_body: footer.html
+bibliography: references.bib
+link-citations: true
+nocite: '@*'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+# Modèle de régression linéaire
+
+> "Regression analysis is the hydrogen bomb of the statistics arsenal."
+>
+> `r tufte::quote_footer("Charles J. Wheelan")`
+
+Dans la première partie du projet, on va étudier comment à modéliser la rélation entre une variable aléatoire et plusieurs variables indépendantes. Cette méthode s'appelle la "régression linéaire".
+
+Pour le réaliser, d'abord, on va présenter un ensemble de données et l'analyser. Ensuite, on va trouver un modèle de régression linéaire convienant aux données. En fin, on va interpréter les résultats et tenter d'améliorer ce modèle.
+
+## Revue de littérature
+
+L'analyse de régression peut être définie comme la recherche de la relation stochastique qui lie deux ou plusieurs variables. Son champ d'application recouvre de multiples domaines, parmi lequels on peut citer la physique, l'astronomie, la biologie, la chimie, la médecine, la géographie, la sociologie, l'histoire, l'économie, la lingustique et le droit. [@yadolah_2004, chap. 1]
+
+La variable de résultat qu'on essaie d'expliquer s'appelle la variable expliquée, la variable dépendante, ou la réponse. Autres variables qu'on utilise à expliquer la réponse s'appellent les variables explicatives, les variables indépendantes, ou les prédicteurs.
+
+## Analyse exploratoire des données {.tabset}
+
+On va construire un modèle de la régression linéaire pour le coût médical d'habitant dans quatre régions. Cet ensemble de données contient l'âge, le sexe, le BMI, le nombre d'enfants, les régions et une variable booléenne indiquée si un fume, qui sont indépendantes, et le coût médical étant unes variable dépendante.
+
+Les données proviennent du forum de **Kaggle** [@kumar_2020], qui fournit un "terrain de jeu" pour des scientifiques de données. Dans l'intérêt de la simplicité, on ne utilise que *l'âge, le sexe, le BMI* et *la variable de fumer* comme ses variables indépendantes.
+
+```{r, include=FALSE}
+library(readr)
+library(DT)
+insurance = read_csv("./data/insurance.csv")
+insurance = subset(insurance, select = -c(children,region) )
+```
+
+```{r, echo=FALSE}
+datatable(insurance)
+```
+
+Regardons la sommaire des données générée par R :
+
+```{r}
+insurance$age_group = cut(insurance$age, seq(10,70,10), c("10-20", "20-30", "30-40", "40-50", "50-60", ">60"), include.lowest=TRUE)
+insurance$age_group = as.factor(insurance$age_group)
+insurance$sex = as.factor(insurance$sex)
+insurance$smoker = as.factor(insurance$smoker)
+summary(insurance)
+```
+
+Une vérification rapide montre qu'il n'y a pas de valeur manquante dans son ensemble de données. Selon la sommaire, on voit que :
+
+-   La moyenne d'âge des participant est plutôt haute : plus de 39 ans. On a divisé l'âge en groupe, créant une nouvelle variable explicative de "age_group". Cependant, on va bénéficier cette variable seulement pour l'analyse des données; dans la partie de la modélisation plus tard, on va juste utiliser l'âge.
+
+-   La ration entre les hommes et les femmes est approximative, mais pas celle du fumeur et du non-fumeur.
+
+-   Les deux moyenne et médiane de l'indice de masse corporelle (BMI) sont plus grande que 30, que le WHO définit comme l'obésité. Cela peut être une signale d'un biais d'échantillonnage, bien qu'il soit trop tôt à conclure.
+
+-   La réponse, "charges", est bien rangée, de 1 122 à 63 770.
+
+Maintenant, on va observer graphiquement quelques rélation entre les attributs dans ses données. Les codes sont adaptés de [@kassambara_2018].
+
+### Figure 1.1 {.unnumbered}
+
+```{r}
+library(ggplot2)
+library(plotly)
+cost_dist = ggplot(data = insurance, aes(charges)) + 
+  geom_histogram(fill='steelblue',col='black', bins=20) +
+  geom_vline(xintercept = mean(insurance$charges), color = 'darkorange') +
+  geom_text(aes(x=mean(charges)+5000, label="\ncoût moyen", y=250), color="darkorange") +
+  labs(title = 'Fig 1.1. La Distribution du Coût Médical', y='Compte',x='Coût')
+ggplotly(cost_dist + scale_color_brewer(palette="Dark2"))
+```
+
+La distribution du coût médical est asymétrique à droite, avec la moyenne est environ 18270.
+
+### Figure 1.2 {.unnumbered}
+
+```{r}
+cost_by_smoker = ggplot(data = insurance, aes(charges, fill = smoker)) + 
+  geom_histogram(bins=20, col='black') +
+  facet_wrap(~smoker) +
+  labs(title = 'Fig 1.2. Coût Médical par Fumeur', y='Compte',x='Coût')
+ggplotly(cost_by_smoker + scale_color_brewer(palette="Dark2"))
+```
+
+Généralement, les fumeurs doivent payer le coût médical beaucoup plus que les non-fumeurs. Un point notable est que dans son ensemble de données, la plupart de participants est non-fumeur (1 064/1 338). Si on trouve que la variable explicative de "smoker" est significative dans son modèle plus tard, on doit se rappeller ce point.
+
+### Figure 1.3 {.unnumbered}
+
+```{r}
+scatter = ggplot(insurance, aes(x=bmi, y=charges)) +
+  geom_point(color='steelblue') +
+  labs(title = 'Fig 1.3. Coût Médical par BMI', y='Coût', x='BMI')
+ggplotly(scatter + scale_color_brewer(palette="Dark2"))
+```
+
+Étonnamment, on ne peut pas voir une rélation claire entre le BMI et le coût médical des participants. Une commande rapide dans le logiciel de R le vérifie : la corrélation entre les deux variables est plutôt basse : `r cor(insurance$bmi, insurance$charges)`.
+
+### Figure 1.4 {.unnumbered}
+
+```{r}
+box = ggplot(data = insurance, aes(x=age_group, y=charges, fill=sex)) + 
+  geom_boxplot() +
+  labs(title = 'Fig 1.4. Coût Médical par Sexe et Âge', y='Cost',x='Groupe d\'âge', color='Sexe')
+box + scale_color_brewer(palette="Dark2")
+```
+
+Apparemment, le coût médical a une tendance à augmenter en fonction d'âge, mais le sexe ne diffère pas ce frais. La graphe au-dessus montre également qu'il y a beaucoup d'anomalie (outliers) dans son ensemble de données, qui fait la moyenne du coût à diffèrer bien de sa médiane (13 270 vs 9 382).
+
+## Modélisation {#model}
+
+Après ayant recherché les données, maintenant, on essaie de les modéliser. Le modèle qu'on va inspecter est le modèle additif :
+
+$$
+Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3 + \beta_4X_4 + \varepsilon
+$$
+
+où :
+
+-   $X_1$: l'âge du participant.
+
+-   $X_2 = 1$ si le participant est masculin, sinon $X_2 = 0$.
+
+-   $X_3$: l'indice de masse corporelle (BMI) du participant.
+
+-   $X_4 = 1$ si le participant fume, sinon $X_4 = 0$.
+
+Les hypothèses du modèle : le vecteur aléatoire $\varepsilon$ suit une loi *multinormale* avec :
+
+$$
+E(\varepsilon) = 0 \\
+Var(\varepsilon) = \sigma^2 \textbf{I}_n
+$$
+
+On va faire appel au logiciel de R pour contruire son modèle :
+
+```{r}
+model_add = lm(charges~age+sex+bmi+smoker, data = insurance)
+model_add_summ = unlist(summary(model_add))
+summary(model_add)
+```
+
+La droite de régression :
+
+$$
+y = -11633,49 + 259,45X_1 - 109,04X_2 + 323,05X_3 + 23833,87X_5
+$$
+
+C'est son modèle additif. Bien qu'il soit un peu simple et "sous-estimer" le problème, on va continuer à analyser ses résultats et essayer de l'améliorer en même temps.
+
+## Analyse des résultats
+
+[@sirigari_2020]
+
+### Signification de la régression {.unnumbered}
+
+Le coefficient de détermination ajusté R^2^~adj~ égale `r model_add_summ$adj.r.squared`, qui indique une rélation linéaire plutôt forte entre la variable expliquée et les variables explicatives. On dit que \~75% de la variation observé des coût médical est expliquée par une rélation linéaire avec les variables explicatives.
+
+Pour mieux comprendre la signification de la régression dans son modèle, on fait le test de Fisher avce l'hypothèse nulle suivant :
+
+$$
+\begin{aligned}
+& H_0: \beta_i = 0, \forall i \in \{1,2,3,4\} \\
+& H_1: \exists i \in \{1,2,3,4\}: \beta_i \ne 0
+\end{aligned}
+$$
+
+On contruit le tableau d'ANOVA :
+
+```{r, echo=FALSE}
+model_null = lm(charges ~ 1, data = insurance)
+anv = anova(model_null, model_add)
+
+ssreg = sum((fitted(model_add) - fitted(model_null)) ^ 2)
+ssres = sum(resid(model_add)^2)
+sstot = ssreg + ssres
+
+library(tibble)
+label = c("Régression", "Résiduelle", "Totale")
+deg_of_freedom = c(4, 1333, 1337)
+sum_squared = c(ssreg, ssres, sstot)
+mean_squared = sum_squared / deg_of_freedom
+mean_squared[3] = NA
+f_obs = c(mean_squared[1]/mean_squared[2], NA, NA)
+
+table = tibble(
+  "Source de variation" = label,
+  "Sommes des carrés" = sum_squared,
+  "Degrés de liberté" = deg_of_freedom,
+  "Moyennes des carrés" = mean_squared,
+  "F~obs~" = f_obs)
+
+options(knitr.kable.NA = '')
+knitr::kable(table, cap = 'Tab 1.1. Tableau d\'ANOVA')
+```
+
+Selon la sommaire du modèle, la valeur p-value \< 2.2e-16, donc **on rejette l'hypothèse nulle** au seuil $\alpha$ = 5%. On conclut que la régression est significative, ou autrement dit, au moins une variable explicative a une forte rélation linéaire avec la réponse.
+
+### Tester sur chaque paramètre {.unnumbered .tabset}
+
+Après on a testé la signification de la régression dans son modèle, on ensuite teste la signification de chaque variable explicative. On va faire 5 tests de Student, correspondant aux 5 variables différentes.
+
+Rappeler son modèle est
+
+$$
+Y = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3 + \beta_4X_4 + \varepsilon,
+$$
+
+les tests sont présentés au-dessous.
+
+```{r, include=FALSE}
+conf_int = confint(model_add)
+```
+
+#### Test 1 {.unnumbered}
+
+Les hypothèses :
+
+$$
+\begin{aligned}
+& H_0: \beta_0 = 0 \\
+& H_1: \beta_0 \ne 0
+\end{aligned}
+$$
+
+Selon la sommaire du modèle, la valeur p-value \< 2.2e-16, donc **on rejette l'hypothèse nulle** au seuil $\alpha$ = 5%. On conclut que $\beta_0$ a un effet dans son modèle.
+
+L'intervalle de confiance au niveau 95% pour $\beta_0$ est :
+
+```{r}
+conf_int[1,]
+```
+
+#### Test 2 {.unnumbered}
+
+Les hypothèses :
+
+$$
+\begin{aligned}
+& H_0: \beta_1 = 0 \\
+& H_1: \beta_1 \ne 0
+\end{aligned}
+$$
+
+Selon la sommaire du modèle, la valeur p-value \< 2.2e-16, donc **on rejette l'hypothèse nulle** au seuil $\alpha$ = 5%. On conclut que $\beta_1$ a un effet dans son modèle, ou autrement dit, l'âge a une rélation linéaire avec le coût médical.
+
+L'intervalle de confiance au niveau 95% pour $\beta_1$ est :
+
+```{r}
+conf_int[2,]
+```
+
+#### Test 3 {.unnumbered}
+
+Les hypothèses :
+
+$$
+\begin{aligned}
+& H_0: \beta_2 = 0 \\
+& H_1: \beta_2 \ne 0
+\end{aligned}
+$$
+
+Selon la sommaire du modèle, la valeur p-value = 0,745 \> 0,05, donc **on ne peut pas rejeter l'hypothèse nulle** au seuil $\alpha$ = 5%. On conclut que $\beta_2$ n'a pas d'effet dans son modèle. Ce résultat explique son observation dans la figure 1.4.
+
+L'intervalle de confiance au niveau 95% pour $\beta_2$ est :
+
+```{r}
+conf_int[3,]
+```
+
+#### Test 4 {.unnumbered}
+
+Les hypothèses :
+
+$$
+\begin{aligned}
+& H_0: \beta_3 = 0 \\
+& H_1: \beta_3 \ne 0
+\end{aligned}
+$$
+
+Selon la sommaire du modèle, la valeur p-value \< 2.2e-16, donc **on rejette l'hypothèse nulle** au seuil $\alpha$ = 5%. On conclut que $\beta_0$ a un effet dans son modèle, ou autrement dit, l'âge a une rélation linéaire avec le coût médical.
+
+L'intervalle de confiance au niveau 95% pour $\beta_3$ est :
+
+```{r}
+conf_int[4,]
+```
+
+#### Test 5 {.unnumbered}
+
+Les hypothèses :
+
+$$
+\begin{aligned}
+& H_0: \beta_4 = 0 \\
+& H_1: \beta_4 \ne 0
+\end{aligned}
+$$
+
+Selon la sommaire du modèle, la valeur p-value \< 2.2e-16, donc **on rejette l'hypothèse nulle** au seuil $\alpha$ = 5%. On conclut que $\beta_0$ a un effet dans son modèle, ou autrement dit, l'âge a une rélation linéaire avec le coût médical.
+
+L'intervalle de confiance au niveau 95% pour $\beta_4$ est :
+
+```{r}
+conf_int[5,]
+```
+
+## Diagnostic du modèle {.tabset}
+
+Dans cette partie, on va diagnostiquer son modèle additif. C'est-à-dire, on va tester les hypothèses préséntés dans [1.2](#model).
+
+La régression linéaire fait plusieurs hypothèses sur les données, telles que :
+
+-   Linéarité des données : la relation entre les prédicteurs et la réponse est censée être linéaire.
+
+-   Normalité des résidus : les erreurs résiduelles sont supposées normalement distribuées.
+
+-   Homogénéité de la variance des résidus : les résidus sont supposés avoir une variance constante (homoscédasticité).
+
+-   Indépendance des résidus.
+
+Les problèmes potentiels incluent :
+
+-   Non-linéarité de la rélation entre réponse - prédicteurs.
+
+-   Hétéroscédasticité : variance non-constante des résidus.
+
+-   Présence de valeurs influentes dans les données (leverages et outliers).
+
+Toutes ces hypothèses et problèmes potentiels peuvent être vérifiés en produisant des diagrammes de diagnostic visualisant les résidus. Le code pour le faire est adapté de [@rimal_2014].
+
+### Residual vs Fitted Plot {.unnumbered}
+
+L'hypothèse de linéarité des données peut être vérifiée en inspectant la figure de **Residual vs Fitted**.
+
+```{r, echo=FALSE}
+p1 = ggplot(model_add, aes(.fitted, .resid)) +
+  geom_point(color='steelblue', shape=19) +
+  stat_smooth(color = 'darkorange', se = FALSE, method = 'loess') +
+  geom_hline(yintercept=0, col="red", linetype="dashed") +
+  xlab("Fitted") +
+  ylab("Residual") +
+  ggtitle("Fig 1.5. Residual vs Fitted Plot")
+ggplotly(p1)
+```
+
+Idéalement, la ligne orange doit être proche de la droite rouge; dans ce cas la rélation entre $Y$ et $X$ est linéaire. Mais la graphe au-dessus indique une rélation non-linéaire dans les données.
+
+### Normal Q-Q {.unnumbered}
+
+L'hypothèse de normalité des résidus peut être vérifiée en inspectant la figure de **Normal Q-Q**.
+
+```{r, echo=FALSE}
+p2 = ggplot(model_add, aes(sample=charges)) +
+  stat_qq(color = 'steelblue') +
+  stat_qq_line(color = 'darkorange') +
+  xlab("Theoretical Quantiles") +
+  ylab("Standardized Residuals") +
+  ggtitle("Fig 1.6. Normal Q-Q")
+ggplotly(p2)
+```
+
+Si les résidus suivent une loi normale, ils ont être approximatifs la droite orange. Dans son modèle, il semble qu'il est en opposé. On peut le tester en faisant le test de **Shapiro-Wilk**.
+
+$$
+\begin{aligned}
+& H_0: \varepsilon \text{ suit une loi normale} \\
+& H_1: \varepsilon \text{ ne suit pas une loi normale}
+\end{aligned}
+$$
+
+Le logiciel de R a déjà une commande pour le faire :
+
+```{r}
+res = resid(model_add)
+shapiro.test(res)
+```
+
+Avec le valuer p-value \< 2.2e-16, on rejette l'hypothèse nulle au seil $\alpha$ = 5%; il s'agit du non-normalité des résidus.
+
+### Scale-Location {.unnumbered}
+
+L'hypothèse d'homogénéité de la variance des résidus peut être vérifiée en inspectant la figure de **Scale-Location**.
+
+```{r, echo=FALSE}
+p3 = ggplot(model_add, aes(.fitted, sqrt(abs(.stdresid))))+
+  geom_point(na.rm=TRUE, color='steelblue') +
+  stat_smooth(method="loess", na.rm = TRUE, se=FALSE, color='darkorange') +
+  xlab("Fitted Value") +
+  ylab(("Sqrt of |Standardized residuals|")) +
+  ggtitle("Fig 1.7. Scale-Location")
+ggplotly(p3)
+```
+
+C'est bien si on voit une ligne horizontale avec des points également répartis. Dans son exemple, ce n'est pas le cas. La variance a tendance à augmenter avec les valeurs "fitted" de la réponse, qui insinue l'hétéroscédasticité. On peut le tester en faisant le test de **Breusch-Pagan**.
+
+$$
+\begin{aligned}
+& H_0: \text{Les résidus sont distribués avec une variance constante} \\
+& H_1: \text{Les résidus ne sont pas distribués avec une variance constante}
+\end{aligned}
+$$
+
+Le logiciel de R a déjà une commande pour le faire :
+
+```{r}
+library(lmtest)
+bptest(model_add)
+```
+
+Avec le valuer p-value \< 2.2e-16, on rejette l'hypothèse nulle au seil $\alpha$ = 5%; cela indique l'hétéroscédasticité des résidus.
+
+### Residual vs Leverage {.unnumbered}
+
+On peut trouver des outliers dans les données en inspectant la figure de **Scale-Location**.
+
+```{r, echo=FALSE}
+p4 = ggplot(model_add, aes(.hat, .stdresid)) +
+  geom_point(aes(size=.cooksd), na.rm=TRUE, color='steelblue') +
+  stat_smooth(method="loess", na.rm=TRUE, color='darkorange', se=FALSE) +
+  xlab("Leverage") +
+  ylab("Standardized Residuals") +
+  ggtitle("Fig 1.8. Residual vs Leverage Plot") +
+  scale_size_continuous("Cook's Distance", range=c(1,5))
+ggplotly(p4)
+```
+
+On voit qu'il y a beacoup des points de donnée qui dépasse 3 écart-types de la droite de régression. Cela signifie que son ensemble de données se composent des outliers, qui affecte négativement la performance de son modèle.
+
+## Améliorations possibles
+
+### Transformation de données {.unnumbered}
+
+La plupart des problèmes qu'on a rencontré dans la section précédente peuvent être résolus en appliquant une transformations (logarithme, racine carrée...) à la variable de résultat $Y$. On va faire la transformation de **Box-Cox** avec $\lambda=0,2$ dans ce cas :
+
+```{r}
+model_bc = lm(
+  ((charges)^0.2 - 1) / 0.2 ~ age + sex + bmi + smoker,
+  data=insurance)
+summary(model_bc)
+```
+
+Bien que le R^2^~adj~ soit mieux que le premier modèle, les tests de Shapiro-Wilk et de Breusch-Pagan donnent les conclusions similaires : il n'y a pas de normalité et de homogénéité des résidus.
+
+```{r}
+shapiro.test(resid(model_bc))
+```
+
+```{r}
+bptest(model_bc)
+```
+
+<u>Note</u> : des détails de la méthodologie de Box-Cox sont hors sujet du cours, faire référence à [@dalpiaz_2018, chap. 14] pour la lecture supplémentaire.
+
+Conclusion : la transformation de la variable de résultat n'est pas d'effet significatif.
+
+### Interaction entre les prédicteurs - Multicolinéarité {.unnumbered}
+
+Dans le commencement de ce rapport, on a mentionné que le modèle additif est probablement une sous-estimation du problème. En fait, c'est exact. Dans son modèle additif, le coût médical peut être différent en moyenne entre smoker et non-smoker pour le même âge; mais le changement du coût pour une augmentation d'âge est égale pour les deux groupes.
+
+Cela vient du fait que les interactions entre les prédicteurs ne sont pas inclus dans son modèle. Cettes interactions sont très importantes, surtout si on a des variables qualitatives comme smoker et sex.
+
+Inspester le modèle avec l'interaction est plutôt complexe, sans parler du problème de multicolinéarité. Car, une fois encore, dans l'intérêt de la simplicité, on ne va pas le présenter ici et le laisser pour la lecture supplémentaire.
+
+## Conclusion
+
+Après beaucoup d'effort de modéliser les données, son modèle est :
+
+$$
+Y'(X) = \beta_0 + \beta_1X_1 + \beta_2X_2 + \beta_3X_3 + \beta_4X_4 + \varepsilon
+$$
+
+où :
+
+-   $X_1$: l'âge du participant.
+
+-   $X_2 = 1$ si le participant est masculin, sinon $X_2 = 0$.
+
+-   $X_3$: l'indice de masse corporelle (BMI) du participant.
+
+-   $X_4 = 1$ si le participant fume, sinon $X_4 = 0$.
+
+-   $Y' = log(Y)$, où $Y$ est le coût médical.
+
+La droite de régression :
+
+$$
+Y'(X) = 13,937 + 0,2X_1 - 0,343X_2 + 0.087X_3 + 10.269X_4
+$$
+
+Les résultats peuvent être décevant, mais quelquefois, on doit accepter que sa technique ne peut pas résoudre le problème sous la main, surtout en réalité. C'est pourquoi on a toujours besoin d'apprendre de nouvelles choses et de les ajouter à sa boîte à outils !
+
+# Choix du modèle
+
+> "All models are wrong, but some are useful."
+>
+> `r tufte::quote_footer("George E. P. Box")`
+
+Lorsqu'on fait l'analyse de régression, on se rend compte souvent qu'on doit chercher dans un trop grand espace de variables explicatives. C'est difficile, parfois impossible, à rechercher exhaustive, c'est-à-dire à essayer toutes les combinaisons des prédicteurs. C'est sans parler des écueils potientiels présentés dans la section précédente. Car, dans cette partie, on va démontrer deux meilleurs procédure pour établir un modèle de régression, à savoir la méthode de **stepwise** et la méthode de **stagewise**.
+
+### Note : Critères de choix {.unnumbered}
+
+[@dalpiaz_2018, chap. 10]
+
+On a utilisé un critère de choix dans la première section : c'est la valeur du **R^2^ ajusté**. En fait, le critère du **R^2^ ajusté** et du **R^2^** sont les plus utilisés, bien qu'il y aie cependant des critiques. Il existe également plusieurs critères pour selectionner le meilleur modèle :
+
+-   **Critère du C~p~ de Mallows :** l'idée de ce critère est de choisir un modèle pour lequel la somme de erreurs quadratiques moyenne est minimale. On choisira la valeur du coefficient C~p~ la plus proche de nombre de paramètres $p$ dans le modèle.
+
+-   **Critère d'information d'Akaike (AIC) :** se compose la vraisemblance (*the likelihood*) qui mesure "la qualité de l'ajustement", et la pénalité (*the penalty*) qui est fonction de la taille du modèle. On choisira la valeur d'AIC la plus petite.
+
+-   **Critère d'information bayésien (BIC) :** quantifie le compromis entre un modèle qui s'ajuste bien et le nombre de paramètres du modèle, mais pour une taille d'échantillon raisonnable, il choisit généralement un modèle plus petit que AIC.
+
+## Exercise 1 : Mensurations
+
+On s'intéresse au lien éventuel entre le poids d'un homme et divers caractéristiques physiques. Son ensemble de données se compose 22 hommes en bonne santé âgés de 16 à 30 ans.
+
+On va utiliser la procédure de **stepwise** avec le critère d'AIC pour trouver un modèle de régression pour ces données.
+
+### Procédure de stepwise {.unnumbered}
+
+[@ntmngoc_2022, chap. 4]
+
+La procédure stepwise propose après l'introduction d'une nouvelle variable dans le modèle :
+
+-   **Réexaminer les tests de Student** pour chaque variable explicative anciennement admise dans le modèlel,
+
+-   Après réexamen, si des variables ne sont plus significatives, alors **retirer du modèle la moins significative d'entre elles**.
+
+### Démonstration {.unnumbered}
+
+```{r, echo=FALSE}
+measurement = read_delim("./data/mensurations.txt", delim = '\t')
+datatable(measurement)
+```
+
+On peut faire appel au logiciel de R à effectuer la procédure de stepwise :
+
+```{r}
+model1_start = lm(Y~1, data = measurement)
+model1_both_aic = step(
+  model1_start,
+  scope = Y ~ X1+X2+X3+X4+X5+X6+X7+X8+X9+X10,
+  direction = 'both'
+)
+```
+
+Le résultat de la procédure est le modèle :
+
+$$
+Y = \beta_0 +\beta_1X_6 + \beta_2X_1 + \beta_3X_7 + \beta_4X_9 + \beta_5X_{10} + \beta_6X_8 + \varepsilon
+$$
+
+L'explication étape par étape :
+
+-   <u>Étape 1</u> : on commence avec le modèle sans variable explicative. On essaie d'ajouter une variable parmi les dix variables à son modèle. Comme le modèle linéaire avec la variable $X_6$ a la meilleur statistique d'AIC , on le sélectionne et continue.
+
+    Le modèle obtenu après cette étape : $Y = \beta_0 +\beta_1X_6 + \varepsilon$.
+
+-   <u>Étape 2</u> : on essaie d'ajouter une nouvelle variable à son modèle en faisant le test de Student pour chaque variable anciennement admise dans le modèle. L'addtion de variable $X_1$ a la meilleur statistique d'AIC , donc on le sélectionne et continue.
+
+    Le modèle obtenu après cette étape : $Y = \beta_0 +\beta_1X_6 +\beta_2X_1 + \varepsilon$.
+
+-   <u>Étape 3</u> : on essaie d'ajouter une nouvelle variable à son modèle en faisant le test de Student pour chaque variable anciennement admise dans le modèle. L'addtion de variable $X_7$ a la meilleur statistique d'AIC , donc on le sélectionne et continue.
+
+    Le modèle obtenu après cette étape : $Y = \beta_0 +\beta_1X_6 +\beta_2X_1 + \beta_3X_7 + \varepsilon$.
+
+-   <u>Étape 4</u> : on essaie d'ajouter une nouvelle variable à son modèle en faisant le test de Student pour chaque variable anciennement admise dans le modèle. L'addtion de variable $X_9$ a la meilleur statistique d'AIC , donc on le sélectionne et continue.
+
+    Le modèle obtenu après cette étape : $Y = \beta_0 +\beta_1X_6 +\beta_2X_1 + \beta_3X_7 + \beta_4X_9 + \varepsilon$.
+
+-   <u>Étape 5</u> : on essaie d'ajouter une nouvelle variable à son modèle en faisant le test de Student pour chaque variable anciennement admise dans le modèle. L'addtion de variable $X_10$ a la meilleur statistique d'AIC , donc on le sélectionne et continue.
+
+    Le modèle obtenu après cette étape : $Y = \beta_0 +\beta_1X_6 +\beta_2X_1 + \beta_3X_7 + \beta_4X_9 + \beta_5X_{10} + \varepsilon$.
+
+-   <u>Étape 6</u> : on essaie d'ajouter une nouvelle variable à son modèle en faisant le test de Student pour chaque variable anciennement admise dans le modèle. L'addtion de variable $X_{8}$ a la meilleur statistique d'AIC , donc on le sélectionne et continue.
+
+    Le modèle obtenu après cette étape : $Y = \beta_0 +\beta_1X_6 +\beta_2X_1 + \beta_3X_7 + \beta_4X_9 + \beta_5X_{10} + \beta_6X_{8} + \varepsilon$.
+
+-   <u>Étape 7</u> : on essaie d'ajouter une nouvelle variable à son modèle en faisant le test de Student pour chaque variable anciennement admise dans le modèle. Maintenant, aucune de modification du modèle précédant peut amélioré sa performance, donc on arrête et conclut.
+
+Le modèle final de son choix :
+
+$$
+Y = \beta_0 +\beta_1X_6 + \beta_2X_1 + \beta_3X_7 + \beta_4X_9 + \beta_5X_{10} + \beta_6X_8 + \varepsilon
+$$
+
+La droite de régression :
+
+```{r, include=FALSE}
+summary(model1_both_aic)
+```
+
+$$
+Y = -79,73 + 0,66X_6 + 1,79X_1 + 0,25X_7 + 0,43X_9 - 0,66X_{10} + 0,51X_8 + \varepsilon
+$$
+
+### Conclusion {.unnumbered}
+
+On a établi le meilleur modèle pour son ensemble de données par la procédure de stepwise. Alors que cette procédure ne sélectionne pas nécessairement le meilleur modèle absolu, elle reste généralement un modèle acceptable.
+
+## Exercise 2 : Taux d'accidents
+
+En inspectant 39 observations faites sur des troncons d'autoroute, on veut trouver un modèle de régression linéaire pour expliquer le taux d'accidents dans l'état du Minnesota.
+
+On va utiliser la procédure de **stagewise** pour trouver un modèle de régression pour ces données.
+
+### Procédure de stagewise {.unnumbered}
+
+[@ntmngoc_2022, chap. 4]
+
+Cette méthode se déroule de la façon suivante :
+
+-   Effectuer la régression avec la variable la plus corrélée avec Y.
+
+-   Calculer les résidus obtenus avec cette régression.
+
+-   Considérer ensuite ces résidus comme une nouvelle variable dépendante que l'on veut expliquer à l'aide des variables explicatives restantes.
+
+### Démonstration {.unnumbered}
+
+Dans cet exercise, on considère une corrélation plus petite de 0,2 est insignifiante.
+
+```{r, echo=FALSE}
+accident = read_csv("./data/tauxaccidents.csv")
+datatable(accident)
+chosen = c(ncol(accident))
+```
+
+-   <u>Étape 1</u> : on recherche la variable explicative $X_i$ la plus corrélée avec $Y$. On a
+
+```{r, echo=FALSE}
+library("dplyr") 
+cor_vec = cor(accident)
+cor_vec = data.frame(cor_vec[nrow(cor_vec),-chosen])
+colnames(cor_vec) = c("Cor.vs.Y")
+print(arrange(cor_vec, desc(abs(Cor.vs.Y))))
+```
+
+Parce que $X_9$ est la plus corrélée avec $Y$, on fait la régression linéaire avec lui comme un seule variable explicative. On obtient la valeur estimée $\hat y_i$ à partir de cette esquation :
+
+```{r, include=FALSE}
+model2_s1 = lm(y_i~`x_i,9`, data = accident)
+chosen = append(chosen, 9)
+coef(model2_s1)
+```
+
+$$
+\hat y_i = 1,98 + 0,16x_{i, 9}
+$$
+
+-   <u>Étape 2</u> : on calcule les résidus $e_{i,1} = y_i - \hat y_i$ du modèle précédent.
+
+```{r, include=FALSE}
+residus1 = resid(model2_s1)
+```
+
+-   <u>Étape 3</u> : on recherche la variable explicative $X_i$ la plus corrélée parmi les variables explicatives restantes avec $e_{i,1}$ au-dessus.
+
+```{r, echo=FALSE}
+cor_vec = cor(residus1, accident)
+cor_vec = data.frame(cor_vec[nrow(cor_vec),-chosen])
+colnames(cor_vec) = c("Cor.vs.Residus")
+print(arrange(cor_vec, desc(abs(Cor.vs.Residus))))
+```
+
+Parce que $X_1$ est la plus corrélée avec $e_{i,1}$ calculé à l'étape 2, on fait la régression linéaire entre ces résidus et $X_1$ comme un seule variable explicative. On obtient la valeur estimée $e_{i,1}$ à partir de cette esquation :
+
+```{r, include=FALSE}
+model2_s2 = lm(residus1~`x_i,1`, data = accident)
+chosen = append(chosen, 1)
+coef(model2_s2)
+```
+
+$$
+\hat e_{i,1} = 0,88 - 0,07x_{i, 1}
+$$
+
+-   <u>Étape 4</u> : on calcule les résidus $e_{i,2} = e_{i,1} - \hat e_{i,1}$ du modèle précédent.
+
+```{r, include=FALSE}
+residus2 = resid(model2_s2)
+```
+
+-   <u>Étape 5</u> : on recherche la variable explicative $X_i$ la plus corrélée parmi les variables explicatives restantes avec $e_{i,2}$ au-dessus.
+
+```{r, echo=FALSE}
+cor_vec = cor(residus2, accident)
+cor_vec = data.frame(cor_vec[nrow(cor_vec),-chosen])
+colnames(cor_vec) = c("Cor.vs.Residus")
+print(arrange(cor_vec, desc(abs(Cor.vs.Residus))))
+```
+
+Parce que $X_4$ est la plus corrélée avec $e_{i,1}$ calculé à l'étape 4, on fait la régression linéaire entre ces résidus et $X_4$ comme un seule variable explicative. On obtient la valeur estimée $e_{i,2}$ à partir de cette esquation :
+
+```{r, include=FALSE}
+model2_s3 = lm(residus2~`x_i,4`, data = accident)
+chosen = append(chosen, 4)
+coef(model2_s3)
+```
+
+$$
+\hat e_{i,2} = 2,48 -0,05x_{i, 4}
+$$
+
+-   <u>Étape 6</u> : on calcule les résidus $e_{i,3} = e_{i,2} - \hat e_{i,2}$ du modèle précédent.
+
+```{r, include=FALSE}
+residus3 = resid(model2_s3)
+```
+
+-   <u>Étape 7</u> : on recherche la variable explicative $X_i$ la plus corrélée parmi les variables explicatives restantes avec $e_{i,3}$ au-dessus.
+
+```{r, echo=FALSE}
+cor_vec = cor(residus3, accident)
+cor_vec = data.frame(cor_vec[nrow(cor_vec),-chosen])
+colnames(cor_vec) = c("Cor.vs.Residus")
+print(arrange(cor_vec, desc(abs(Cor.vs.Residus))))
+```
+
+On se rend qu'il n'y a pas de variable explicative étant corrélée significativement avec $e_{i,3}$. La procédure de stagewise s'arrête donc là.
+
+Son équation final est l'addition de deux équations obtenues aux étapes *1, 3 et 5* :
+
+$$
+\begin{eqnarray}
+y_i &=& \hat y_i + e_{i,1} \\
+&=& 1,98 + 0,16x_{i, 9} + \hat e_{i,1} + e_{i,2} \\
+&=& 1,98 + 0,16x_{i, 9} + 0,88 - 0,07x_{i, 1} + e_{i,2} \\
+&=& 2,86 + 0,16x_{i, 9} - 0,07x_{i, 1} + \hat e_{i,2} + e_{i,3} \\
+&=& 2,86 + 0,16x_{i, 9} - 0,07x_{i, 1} + 2,48 -0,05x_{i, 4} + e_{i,3} \\
+&=& 5,34 + 0,16x_{i, 9} - 0,07x_{i, 1} - 0,05x_{i, 4} + e_{i,3} \\
+\end{eqnarray}
+$$
+
+Le modèle équivalent est :
+
+$$
+Y = 5,34 + 0,16X_{9} - 0,07X_{1} - 0,05X_{4} + \varepsilon
+$$
+
+### Conclusion {.unnumbered}
+
+Grâce à la procédure de stagewise, on peut établir un modèle de régression linéaire pour son ensemble de données. Cependant l'estimation par les moindres carrés fournit une prédiction globale meilleure que la régression stagewise, elle offre de bons résultats quand on suspecte qu'il y aie un problème de multicolinéarité.
+
+# Référence {#bibliography}
+
+::: {#refs}
+:::
